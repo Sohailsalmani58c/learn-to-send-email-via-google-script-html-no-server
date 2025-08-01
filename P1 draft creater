@@ -1,0 +1,155 @@
+/**
+ * @OnlyCurrentDoc
+ */
+
+// ✏️ Mail Merge Constants
+const RECIPIENT_COL = "email";
+const RECIPIENT_NAME_COL = "name";
+const COMPANY_COL = "company";
+const EMAIL_SENT_COL = "sent";
+const SENDER_NAME = "Harshit Kangra";
+const SENDER_EMAIL = "harshit@businessconnectindia.in";
+
+// 📌 Email Remover Constants
+const EMAIL_COLUMN = 3;  // Column C
+const ARCHIVE_SHEET_NAME = "RemovedData";
+const LABEL_NAME = "targetlabel";
+
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Tools')
+    .addSubMenu(ui.createMenu('Mail Merge')
+      .addItem('Create Drafts', 'createDrafts'))
+    .addSubMenu(ui.createMenu('Email Remover')
+      .addItem('Start Cleanup', 'clearEmailsFromAllSheets'))
+    .addToUi();
+}
+
+// ========== ✉️ MAIL MERGE ==========
+function createDrafts(subjectLine, sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()) {
+  try {
+    if (!subjectLine) {
+      subjectLine = Browser.inputBox("Mail Merge", "Enter the Gmail draft subject line:", Browser.Buttons.OK_CANCEL);
+      if (!subjectLine || subjectLine.toLowerCase() === 'cancel') return;
+    }
+
+    const emailTemplate = getGmailTemplateFromDrafts_(subjectLine);
+    const data = sheet.getDataRange().getDisplayValues();
+    const headers = data.shift();
+    const recipientIdx = headers.indexOf(RECIPIENT_COL);
+    const nameIdx = headers.indexOf(RECIPIENT_NAME_COL);
+    const companyIdx = headers.indexOf(COMPANY_COL);
+    const sentIdx = headers.indexOf(EMAIL_SENT_COL);
+
+    if (recipientIdx === -1 || nameIdx === -1 || companyIdx === -1 || sentIdx === -1) {
+      throw new Error(`Missing required columns: "${RECIPIENT_COL}", "${RECIPIENT_NAME_COL}", "${COMPANY_COL}", or "${EMAIL_SENT_COL}".`);
+    }
+
+    const output = [];
+
+    data.forEach((row) => {
+      const rowObj = headers.reduce((obj, key, idx) => (obj[key] = row[idx], obj), {});
+      const recipient = row[recipientIdx];
+      const alreadySent = row[sentIdx];
+
+      if (!alreadySent) {
+        try {
+          const msg = fillInTemplateFromObject_(emailTemplate.message, rowObj);
+          GmailApp.createDraft(recipient, msg.subject, msg.text, {
+            htmlBody: msg.html,
+            name: SENDER_NAME
+          });
+          output.push(["Draft Created"]);
+        } catch (e) {
+          Logger.log(`Error creating draft for ${recipient}: ${e}`);
+          output.push([`Error: ${e.message}`]);
+        }
+        Utilities.sleep(500);
+      } else {
+        output.push([alreadySent]);
+      }
+    });
+
+    sheet.getRange(2, sentIdx + 1, output.length, 1).setValues(output);
+    SpreadsheetApp.getUi().alert("✅ Drafts created successfully.");
+  } catch (e) {
+    Logger.log("Mail Merge Draft Error: " + e.message);
+    SpreadsheetApp.getUi().alert("❌ Error: " + e.message);
+  }
+}
+
+function getGmailTemplateFromDrafts_(subject) {
+  const drafts = GmailApp.getDrafts();
+  for (let i = 0; i < drafts.length; i++) {
+    const draft = drafts[i].getMessage();
+    if (draft.getSubject() === subject) {
+      return {
+        message: {
+          subject: draft.getSubject(),
+          text: draft.getPlainBody(),
+          html: draft.getBody()
+        }
+      };
+    }
+  }
+  throw new Error(`No Gmail draft found with subject line: "${subject}"`);
+}
+
+function fillInTemplateFromObject_(template, data) {
+  const html = template.html.replace(/{{\s*([^}]+)\s*}}/g, (_, key) => data[key.trim()] || '');
+  const text = template.text.replace(/{{\s*([^}]+)\s*}}/g, (_, key) => data[key.trim()] || '');
+  const subject = template.subject.replace(/{{\s*([^}]+)\s*}}/g, (_, key) => data[key.trim()] || '');
+  return { html, text, subject };
+}
+
+// ========== 🧹 EMAIL REMOVER ==========
+function clearEmailsFromAllSheets() {
+  const label = GmailApp.getUserLabelByName(LABEL_NAME);
+  if (!label) {
+    Logger.log(`❌ Label '${LABEL_NAME}' not found.`);
+    return;
+  }
+
+  const threads = label.getThreads();
+  const recipientEmails = new Set();
+
+  threads.forEach(thread => {
+    thread.getMessages().forEach(msg => {
+      msg.getTo().split(',').forEach(address => {
+        const match = address.match(/<(.+)>/);
+        const cleanEmail = match ? match[1] : address.trim();
+        recipientEmails.add(cleanEmail.toLowerCase());
+      });
+    });
+  });
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let archiveSheet = ss.getSheetByName(ARCHIVE_SHEET_NAME);
+  if (!archiveSheet) {
+    archiveSheet = ss.insertSheet(ARCHIVE_SHEET_NAME);
+  }
+
+  let totalMoved = 0;
+
+  const sheets = ss.getSheets().filter(s => s.getName() !== ARCHIVE_SHEET_NAME);
+
+  sheets.forEach(sheet => {
+    const data = sheet.getDataRange().getValues();
+
+    for (let i = data.length - 1; i > 0; i--) {
+      const row = data[i];
+      const emailCell = row[EMAIL_COLUMN - 1];
+      if (!emailCell) continue;
+
+      const sheetEmail = emailCell.toString().trim().toLowerCase();
+      if (recipientEmails.has(sheetEmail)) {
+        archiveSheet.appendRow(row);
+        sheet.deleteRow(i + 1);
+        Logger.log(`📤 Moved row from '${sheet.getName()}' to '${ARCHIVE_SHEET_NAME}' for email: ${sheetEmail}`);
+        totalMoved++;
+      }
+    }
+  });
+
+  Logger.log(`✅ Done: Moved ${totalMoved} rows to '${ARCHIVE_SHEET_NAME}'.`);
+}
