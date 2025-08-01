@@ -1,0 +1,93 @@
+function onOpen() { 
+  SpreadsheetApp.getUi()
+    .createMenu('Email Sender')
+    .addItem('Send Emails from Draft (Auto)', 'sendEmailsFromDraft')
+    .addToUi();
+}
+
+function sendEmailsFromDraft() {
+  const ui = SpreadsheetApp.getUi();
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const data = sheet.getDataRange().getValues();
+
+  const headers = data[0];
+  const nameIndex = headers.indexOf("name");
+  const emailIndex = headers.indexOf("email");
+  const companyIndex = headers.indexOf("company");
+
+  if (nameIndex === -1 || emailIndex === -1 || companyIndex === -1) {
+    ui.alert("Missing required columns: 'Name', 'Email', 'Company'. Please check the header row.");
+    return;
+  }
+
+  const drafts = GmailApp.getDrafts();
+  if (drafts.length === 0) {
+    ui.alert("No drafts found in your Gmail. Please create one with {{Name}} and {{Company}} placeholders.");
+    return;
+  }
+
+  const draftSubjects = drafts.map((d, i) => `${i + 1}: ${d.getMessage().getSubject()}`);
+  const draftPrompt = ui.prompt(
+    "Select Draft",
+    "Enter the draft number to use:\n\n" + draftSubjects.join("\n"),
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (draftPrompt.getSelectedButton() !== ui.Button.OK) {
+    ui.alert("Draft selection canceled.");
+    return;
+  }
+
+  const draftNumber = parseInt(draftPrompt.getResponseText().trim(), 10);
+  if (isNaN(draftNumber) || draftNumber < 1 || draftNumber > drafts.length) {
+    ui.alert("Invalid draft number.");
+    return;
+  }
+
+  const selectedDraft = drafts[draftNumber - 1].getMessage();
+  const draftSubject = selectedDraft.getSubject();
+  const draftBody = selectedDraft.getBody();
+
+  // Helper to replace {{Name}} and {{Company}} placeholders
+  function replacePlaceholders(text, name, company) {
+    return text.replace(/{{\s*name\s*}}/gi, name)
+               .replace(/{{\s*company\s*}}/gi, company);
+  }
+
+  let sentCount = 0;
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const rawName = row[nameIndex];
+    const email = row[emailIndex];
+    const company = row[companyIndex];
+
+    if (!rawName || !email || !company || email.toString().trim() === "") {
+      Logger.log(`❌ Skipped invalid row at line ${i + 1}`);
+      continue;
+    }
+
+    const name = toTitleCase(rawName.toString().trim());
+    const subject = replacePlaceholders(draftSubject, name, company);
+    const body = replacePlaceholders(draftBody, name, company);
+
+    try {
+      GmailApp.sendEmail(email, subject, '', {
+        htmlBody: body,
+        name: "Harshit Kangra"  // Hardcoded to always show as manual sender
+      });
+      Logger.log(`✅ Sent to: ${name} <${email}>`);
+      sentCount++;
+    } catch (e) {
+      Logger.log(`⚠️ Failed to send to ${email}: ${e}`);
+    }
+
+    Utilities.sleep(2000); // Avoid Gmail rate limits
+  }
+
+  ui.alert(`✅ Emails sent: ${sentCount}`);
+}
+
+// Converts string to Title Case
+function toTitleCase(str) {
+  return str.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+}
